@@ -1,4 +1,6 @@
 #Based on image export and roi export scripts that come with Omero
+#This code would be much easier to understand with type annotations
+#I should add some!
 
 import omero
 from omero.constants.namespaces import NSCREATED, NSOMETIFF
@@ -23,6 +25,48 @@ from datetime import datetime
 DEFAULT_FILE_NAME = "Batch_ROI_Export.csv"
 INSIGHT_POINT_LIST_RE = re.compile(r'points\[([^\]]+)\]')
 
+# keep track of log strings.
+log_strings = []
+
+
+COLUMN_NAMES = ["image_id",
+                "image_name",
+                "roi_id",
+                "shape_id",
+                "type",
+                "text",
+                "z",
+                "t",
+                "channel",
+                "area",
+                "length",
+                "points",
+                "min",
+                "max",
+                "sum",
+                "mean",
+                "std_dev",
+                "X",
+                "Y",
+                "Width",
+                "Height",
+                "RadiusX",
+                "RadiusY",
+                "X1",
+                "Y1",
+                "X2",
+                "Y2",
+                "Points"]
+def log(text):
+    """
+    Adds the text to a list of logs. Compiled into text file at the end.
+    """
+    # Handle unicode
+    try:
+        text = text.encode('utf8')
+    except UnicodeEncodeError:
+        pass
+    log_strings.append(str(text))
 
 def get_roi_export_data(conn, script_params, image, units=None):
     """Get pixel data for shapes on image and returns list of dicts."""
@@ -110,37 +154,6 @@ def get_roi_export_data(conn, script_params, image, units=None):
                         export_data.append(row_data)
 
     return export_data
-
-
-COLUMN_NAMES = ["image_id",
-                "image_name",
-                "roi_id",
-                "shape_id",
-                "type",
-                "text",
-                "z",
-                "t",
-                "channel",
-                "area",
-                "length",
-                "points",
-                "min",
-                "max",
-                "sum",
-                "mean",
-                "std_dev",
-                "X",
-                "Y",
-                "Width",
-                "Height",
-                "RadiusX",
-                "RadiusY",
-                "X1",
-                "Y1",
-                "X2",
-                "Y2",
-                "Points"]
-
 
 def add_shape_coords(shape, row_data, pixel_size_x, pixel_size_y):
     """Add shape coordinates and length or area to the row_data dict."""
@@ -271,111 +284,6 @@ def batch_roi_export(conn, script_params):
     message = "Exported %s shapes" % len(export_data)
     return file_ann, message
 
-
-def run_script():
-    """The main entry point of the script, as called by the client."""
-    data_types = [rstring('Dataset'), rstring('Image')]
-
-    client = scripts.client(
-        'Batch_ROI_Export.py',
-        """Export ROI intensities for selected Images as a CSV file.""",
-
-        scripts.String(
-            "Data_Type", optional=False, grouping="1",
-            description="The data you want to work with.", values=data_types,
-            default="Image"),
-
-        scripts.List(
-            "IDs", optional=False, grouping="2",
-            description="List of Dataset IDs or Image IDs").ofType(rlong(0)),
-
-        scripts.List(
-            "Channels", grouping="3", default=[1, 2, 3, 4],
-            description="Indices of Channels to measure intensity."
-        ).ofType(rint(0)),
-
-        scripts.Bool(
-            "Export_All_Planes", grouping="4",
-            description=("Export all Z and T planes for shapes "
-                         "where Z and T are not set?"),
-            default=False),
-
-        scripts.String(
-            "File_Name", grouping="5", default=DEFAULT_FILE_NAME,
-            description="Name of the exported CSV file"),
-
-        authors=["William Moore", "OME Team"],
-        institutions=["University of Dundee"],
-        contact="ome-users@lists.openmicroscopy.org.uk",
-    )
-
-    try:
-        conn = BlitzGateway(client_obj=client)
-
-        script_params = client.getInputs(unwrap=True)
-        log("script_params:")
-        log(script_params)
-
-        # call the main script
-        result = batch_roi_export(conn, script_params)
-
-        # Return message and file_annotation to client
-        if result is None:
-            message = "No images found"
-        else:
-            file_ann, message = result
-            if file_ann is not None:
-                client.setOutput("File_Annotation", robject(file_ann._obj))
-
-        client.setOutput("Message", rstring(message))
-
-    finally:
-        client.closeSession()
-
-
-if __name__ == "__main__":
-    run_script()
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
-# -----------------------------------------------------------------------------
-#   Copyright (C) 2018-2019 University of Dundee. All rights reserved.
-
-#   This program is free software; you can redistribute it and/or modify
-#   it under the terms of the GNU General Public License as published by
-#   the Free Software Foundation; either version 2 of the License, or
-#   (at your option) any later version.
-#   This program is distributed in the hope that it will be useful,
-#   but WITHOUT ANY WARRANTY; without even the implied warranty of
-#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#   GNU General Public License for more details.
-
-#   You should have received a copy of the GNU General Public License along
-#   with this program; if not, write to the Free Software Foundation, Inc.,
-#   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-
-# ------------------------------------------------------------------------------
-
-"""This script exports ROI intensities for selected images."""
-
-
-import omero.scripts as scripts
-from omero.gateway import BlitzGateway
-from omero.rtypes import rlong, rint, rstring, robject, unwrap
-from omero.model import RectangleI, EllipseI, LineI, PolygonI, PolylineI, \
-    MaskI, LabelI, PointI
-from math import sqrt, pi
-import re
-
-DEFAULT_FILE_NAME = "Batch_ROI_Export.csv"
-INSIGHT_POINT_LIST_RE = re.compile(r'points\[([^\]]+)\]')
-
-
-def log(data):
-    """Handle logging or printing in one place."""
-    print(data)
-
-
 def get_export_data(conn, script_params, image, units=None):
     """Get pixel data for shapes on image and returns list of dicts."""
     log("Image ID %s..." % image.id)
@@ -464,36 +372,6 @@ def get_export_data(conn, script_params, image, units=None):
     return export_data
 
 
-COLUMN_NAMES = ["image_id",
-                "image_name",
-                "roi_id",
-                "shape_id",
-                "type",
-                "text",
-                "z",
-                "t",
-                "channel",
-                "area",
-                "length",
-                "points",
-                "min",
-                "max",
-                "sum",
-                "mean",
-                "std_dev",
-                "X",
-                "Y",
-                "Width",
-                "Height",
-                "RadiusX",
-                "RadiusY",
-                "X1",
-                "Y1",
-                "X2",
-                "Y2",
-                "Points"]
-
-
 def add_shape_coords(shape, row_data, pixel_size_x, pixel_size_y):
     """Add shape coordinates and length or area to the row_data dict."""
     if shape.getTextValue():
@@ -552,48 +430,11 @@ def add_shape_coords(shape, row_data, pixel_size_x, pixel_size_y):
         row_data['area'] = row_data['area'] * pixel_size_x * pixel_size_y
 
 
-def write_csv(conn, export_data, script_params, units_symbol):
-    """Write the list of data to a CSV file and create a file annotation."""
-    file_name = script_params.get("File_Name", "")
-    if len(file_name) == 0:
-        file_name = DEFAULT_FILE_NAME
-    if not file_name.endswith(".csv"):
-        file_name += ".csv"
-
-    csv_header = ",".join(COLUMN_NAMES)
-    if units_symbol is None:
-        units_symbol = "pixels"
-    csv_header = csv_header.replace(",length,", ",length (%s)," % units_symbol)
-    csv_header = csv_header.replace(",area,", ",area (%s)," % units_symbol)
-    csv_rows = [csv_header]
-
-    for row in export_data:
-        cells = [str(row.get(name, "")) for name in COLUMN_NAMES]
-        csv_rows.append(",".join(cells))
-
-    with open(file_name, 'w') as csv_file:
-        csv_file.write("\n".join(csv_rows))
-
-    return conn.createFileAnnfromLocalFile(file_name, mimetype="text/csv")
-
-
 def link_annotation(objects, file_ann):
     """Link the File Annotation to each object."""
     for o in objects:
         if o.canAnnotate():
             o.linkAnnotation(file_ann)
-
-
-def log(text):
-    """
-    Adds the text to a list of logs. Compiled into text file at the end.
-    """
-    # Handle unicode
-    try:
-        text = text.encode('utf8')
-    except UnicodeEncodeError:
-        pass
-    log_strings.append(str(text))
 
 
 def compress(target, base):
@@ -613,7 +454,15 @@ def compress(target, base):
     finally:
         zip_file.close()
 
+"""NMS: The use of 'save' here may be confusing at first. It's actually calling
+the .save method on a PIL image object. Omero server manages the IO ops called
+within scripts, so even files generated by e.g. the standard Python IO stuff
+are managed by Omero-server without the programmer having to worry about freeing
+up temporary files after use. In other words, the Python interpreter is "inside"
+of Omero-server, which appears like an OS as far as Python's concerned.
 
+Not certain I understand it yet.
+"""
 def save_plane(image, format, c_name, z_range, project_z, t=0, channel=None,
                greyscale=False, zoom_percent=None, folder_name=None):
     """
@@ -654,6 +503,9 @@ def save_plane(image, format, c_name, z_range, project_z, t=0, channel=None,
 
     # All Z and T indices in this script are 1-based, but this method uses
     # 0-based.
+    #NMS: renderImage is somewhere in the Blitz Gateway wrappers
+    #See https://downloads.openmicroscopy.org/omero/5.5.1/api/python/omero/omero.gateway.html
+    #'plane' is a PIL image object, as described in the docs at the lnk above
     plane = image.renderImage(z_range[0]-1, t-1)
     if zoom_percent:
         w, h = plane.size
@@ -827,7 +679,7 @@ def batch_image_export(conn, script_params):
     if "Zoom" in script_params and script_params["Zoom"] != "100%":
         zoom_percent = int(script_params["Zoom"][:-1])
 
-    # functions used below for each imaage.
+    # functions used below for each image.
     def get_z_range(size_z, script_params):
         z_range = None
         if "Choose_Z_Section" in script_params:
@@ -888,7 +740,7 @@ def batch_image_export(conn, script_params):
         return None, message
 
     # Attach figure to the first image
-    parent = objects[0]
+    parent = objects[0] #NMS: Why first index? Has to do with data model?
 
     if data_type == 'Dataset':
         images = []
@@ -1016,3 +868,136 @@ def batch_image_export(conn, script_params):
         namespace=namespace, mimetype=mimetype)
     message += ann_message
     return file_annotation, message
+
+def run_script():
+    data_types = [rstring('Dataset'), rstring('Image')]
+    formats = [rstring('JPEG'), rstring('PNG'), rstring('TIFF'),
+               rstring('OME-TIFF')]
+    default_z_option = 'Default-Z (last-viewed)'
+    z_choices = [rstring(default_z_option),
+                 rstring('ALL Z planes'),
+                 # currently ImageWrapper only allows full Z-stack projection
+                 rstring('Max projection'),
+                 rstring('Other (see below)')]
+    default_t_option = 'Default-T (last-viewed)'
+    t_choices = [rstring(default_t_option),
+                 rstring('ALL T planes'),
+                 rstring('Other (see below)')]
+    zoom_percents = omero.rtypes.wrap(["25%", "50%", "100%", "200%",
+                                       "300%", "400%"])
+
+    client = scripts.client(
+        'extract_tagged_rois.py',
+        """Extract ROIs annotated with a user-selectable character. The text   \
+        following the character becomes the name of a tag attached to the ROI. \
+        There may be multiple tags per ROI separated by the tag delimiter. The \ 
+        output is a ZIP file with images of the ROIs and a comma-delimited text\
+        file containing index info. Each tag is exported as a separate row and \
+        has a unique identifier. Image files are named by ROI ID, and each row \
+        in the index info has a field containing the id of the corresponding   \
+        ROI.""",
+
+        scripts.String(
+            "Data_Type", optional=False, grouping="1",
+            description="The data you want to work with.", values=data_types,
+            default="Image"),
+
+        scripts.List(
+            "IDs", optional=False, grouping="2",
+            description="List of Dataset IDs or Image IDs").ofType(rlong(0)),
+
+        scripts.Bool(
+            "Export_Individual_Channels", grouping="3",
+            description="Save individual channels as separate images",
+            default=True),
+
+        scripts.Bool(
+            "Individual_Channels_Grey", grouping="3.1",
+            description="If true, all individual channel images will be"
+                        " grayscale", default=False),
+
+        scripts.List(
+            "Channel_Names", grouping="3.2",
+            description="Names for saving individual channel images"),
+
+        scripts.Bool(
+            "Export_Merged_Image", grouping="4",
+            description="Save merged image, using current rendering settings",
+            default=True),
+
+        scripts.String(
+            "Choose_Z_Section", grouping="5",
+            description="Default Z is last viewed Z for each image, OR choose"
+                        " Z below.", values=z_choices, default=default_z_option),
+
+        scripts.Int(
+            "OR_specify_Z_index", grouping="5.1",
+            description="Choose a specific Z-index to export", min=1),
+
+        scripts.Int(
+            "OR_specify_Z_start_AND...", grouping="5.2",
+            description="Choose a specific Z-index to export", min=1),
+
+        scripts.Int(
+            "...specify_Z_end", grouping="5.3",
+            description="Choose a specific Z-index to export", min=1),
+
+        scripts.String(
+            "Choose_T_Section", grouping="6",
+            description="Default T is last viewed T for each image, OR choose"
+                        " T below.", values=t_choices, default=default_t_option),
+
+        scripts.Int(
+            "OR_specify_T_index", grouping="6.1",
+            description="Choose a specific T-index to export", min=1),
+
+        scripts.Int(
+            "OR_specify_T_start_AND...", grouping="6.2",
+            description="Choose a specific T-index to export", min=1),
+
+        scripts.Int(
+            "...specify_T_end", grouping="6.3",
+            description="Choose a specific T-index to export", min=1),
+
+        scripts.String(
+            "Zoom", grouping="7", values=zoom_percents,
+            description="Zoom (jpeg, png or tiff) before saving with"
+                        " ANTIALIAS interpolation", default="100%"),
+
+        scripts.String(
+            "Format", grouping="8",
+            description="Format to save image", values=formats,
+            default='JPEG'),
+
+        scripts.String(
+            "Folder_Name", grouping="9",
+            description="Name of folder (and zip file) to store images and",
+            default='Batch_Tagged_ROI_Export'),
+
+        version="4.3.0",
+        authors=["William Moore", "OME Team", "Nima Seyedtalebi"],
+        institutions=["University of Dundee", "University of Kentucky"],
+        contact="ome-users@lists.openmicroscopy.org.uk",
+    )
+
+    try:
+        start_time = datetime.now()
+        script_params = {}
+        conn = BlitzGateway(client_obj=client)
+        script_params = client.getInputs(unwrap=True)
+        for key, value in script_params.items():
+            log("%s:%s" % (key, value))
+        # call the main script - returns a file annotation wrapper
+        file_annotation, message = batch_image_export(conn, script_params)
+        stop_time = datetime.now()
+        log("Duration: %s" % str(stop_time-start_time))
+        # return this fileAnnotation to the client.
+        client.setOutput("Message", rstring(message))
+        if file_annotation is not None:
+            client.setOutput("File_Annotation",
+                             robject(file_annotation._obj))
+    finally:
+        client.closeSession()
+
+if __name__ == "__main__":
+    run_script()
