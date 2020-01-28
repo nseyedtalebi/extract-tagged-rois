@@ -787,8 +787,10 @@ def batch_image_export(conn, script_params):
             size_x = pixels.getSizeX()
             size_y = pixels.getSizeY()
             if size_x*size_y > size:
-                msg = "Can't export image over %s pixels. " \
-                      "See 'omero.client.download_as.max_size'" % size
+                msg = "Can't export image over %s pixels. See Omero server \
+                configuration property 'omero.client.download_as.max_size \
+                (https://docs.openmicroscopy.org/omero/5.5.0/sysadmins/\
+                config.html#omero-client-download-as-max-size)" % size
                 log("  ** %s. **" % msg)
                 if len(images) == 1:
                     return None, msg
@@ -869,6 +871,7 @@ def batch_image_export(conn, script_params):
     message += ann_message
     return file_annotation, message
 
+
 def run_script():
     data_types = [rstring('Dataset'), rstring('Image')]
     formats = [rstring('JPEG'), rstring('PNG'), rstring('TIFF'),
@@ -926,53 +929,18 @@ def run_script():
             default=True),
 
         scripts.String(
-            "Choose_Z_Section", grouping="5",
-            description="Default Z is last viewed Z for each image, OR choose"
-                        " Z below.", values=z_choices, default=default_z_option),
-
-        scripts.Int(
-            "OR_specify_Z_index", grouping="5.1",
-            description="Choose a specific Z-index to export", min=1),
-
-        scripts.Int(
-            "OR_specify_Z_start_AND...", grouping="5.2",
-            description="Choose a specific Z-index to export", min=1),
-
-        scripts.Int(
-            "...specify_Z_end", grouping="5.3",
-            description="Choose a specific Z-index to export", min=1),
-
-        scripts.String(
-            "Choose_T_Section", grouping="6",
-            description="Default T is last viewed T for each image, OR choose"
-                        " T below.", values=t_choices, default=default_t_option),
-
-        scripts.Int(
-            "OR_specify_T_index", grouping="6.1",
-            description="Choose a specific T-index to export", min=1),
-
-        scripts.Int(
-            "OR_specify_T_start_AND...", grouping="6.2",
-            description="Choose a specific T-index to export", min=1),
-
-        scripts.Int(
-            "...specify_T_end", grouping="6.3",
-            description="Choose a specific T-index to export", min=1),
-
-        scripts.String(
-            "Zoom", grouping="7", values=zoom_percents,
-            description="Zoom (jpeg, png or tiff) before saving with"
-                        " ANTIALIAS interpolation", default="100%"),
-
-        scripts.String(
             "Format", grouping="8",
             description="Format to save image", values=formats,
             default='JPEG'),
 
         scripts.String(
             "Folder_Name", grouping="9",
-            description="Name of folder (and zip file) to store images and",
-            default='Batch_Tagged_ROI_Export'),
+            description="Name of folder (and zip file) to store images and index file",
+            default='Tagged_ROI_Export'),
+
+        scripts.String(
+            "Tag_Delimiter", grouping="10", description="Tag delimiter character that indicates the beginning of each tag. All other characters are assumed to be part of a tag.",
+            default="#"),
 
         version="4.3.0",
         authors=["William Moore", "OME Team", "Nima Seyedtalebi"],
