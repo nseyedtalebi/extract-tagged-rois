@@ -298,7 +298,9 @@ def get_export_data(conn, script_params, image, units=None):
         pixel_size_y = pixel_size_y.getValue() if pixel_size_y else None
 
     roi_service = conn.getRoiService()
-    all_planes = script_params["Export_All_Planes"]
+    #all_planes = script_params["Export_All_Planes"]
+    #NMS: To simplify things to start
+    all_planes = False
     size_c = image.getSizeC()
     # Channels index
     channels = script_params.get("Channels", [1])
@@ -453,6 +455,7 @@ def compress(target, base):
 
     finally:
         zip_file.close()
+
 
 """NMS: The use of 'save' here may be confusing at first. It's actually calling
 the .save method on a PIL image object. Omero server manages the IO ops called
@@ -654,7 +657,69 @@ def save_planes_for_image(conn, image, size_c, split_cs, merged_cs,
                                c, g_scale, zoom_percent, folder_name)
 
 
-def batch_image_export(conn, script_params):
+def get_z_range(size_z, script_params):
+    z_range = None
+    if "Choose_Z_Section" in script_params:
+        z_choice = script_params["Choose_Z_Section"]
+        # NB: all Z indices in this script are 1-based
+        if z_choice == 'ALL Z planes':
+            z_range = (1, size_z+1)
+        elif "OR_specify_Z_index" in script_params:
+            z_index = script_params["OR_specify_Z_index"]
+            z_index = min(z_index, size_z)
+            z_range = (z_index,)
+        elif "OR_specify_Z_start_AND..." in script_params and \
+                "...specify_Z_end" in script_params:
+            start = script_params["OR_specify_Z_start_AND..."]
+            start = min(start, size_z)
+            end = script_params["...specify_Z_end"]
+            end = min(end, size_z)
+            # in case user got z_start and z_end mixed up
+            z_start = min(start, end)
+            z_end = max(start, end)
+            if z_start == z_end:
+                z_range = (z_start,)
+            else:
+                z_range = (z_start, z_end+1)
+    return z_range
+
+
+def get_t_range(size_t, script_params):
+    t_range = None
+    if "Choose_T_Section" in script_params:
+        t_choice = script_params["Choose_T_Section"]
+        # NB: all T indices in this script are 1-based
+        if t_choice == 'ALL T planes':
+            t_range = (1, size_t+1)
+        elif "OR_specify_T_index" in script_params:
+            t_index = script_params["OR_specify_T_index"]
+            t_index = min(t_index, size_t)
+            t_range = (t_index,)
+        elif "OR_specify_T_start_AND..." in script_params and \
+                "...specify_T_end" in script_params:
+            start = script_params["OR_specify_T_start_AND..."]
+            start = min(start, size_t)
+            end = script_params["...specify_T_end"]
+            end = min(end, size_t)
+            # in case user got t_start and t_end mixed up
+            t_start = min(start, end)
+            t_end = max(start, end)
+            if t_start == t_end:
+                t_range = (t_start,)
+            else:
+                t_range = (t_start, t_end+1)
+    return t_range
+
+
+def set_zoom_percent(conn, script_params):
+    return 100
+
+
+def get_tags(export_data):
+    return ("test",)
+
+
+def export_images_of_tagged_rois(conn, script_params):
 
     # for params with default values, we can get the value directly
     split_cs = script_params["Export_Individual_Channels"]
@@ -664,8 +729,7 @@ def batch_image_export(conn, script_params):
     folder_name = script_params["Folder_Name"]
     folder_name = os.path.basename(folder_name)
     format = script_params["Format"]
-    project_z = "Choose_Z_Section" in script_params and \
-                script_params["Choose_Z_Section"] == 'Max projection'
+    project_z = False
 
     if (not split_cs) and (not merged_cs):
         log("Not chosen to save Individual Channels OR Merged Image")
@@ -675,62 +739,7 @@ def batch_image_export(conn, script_params):
     channel_names = []
     if "Channel_Names" in script_params:
         channel_names = script_params["Channel_Names"]
-    zoom_percent = None
-    if "Zoom" in script_params and script_params["Zoom"] != "100%":
-        zoom_percent = int(script_params["Zoom"][:-1])
-
-    # functions used below for each image.
-    def get_z_range(size_z, script_params):
-        z_range = None
-        if "Choose_Z_Section" in script_params:
-            z_choice = script_params["Choose_Z_Section"]
-            # NB: all Z indices in this script are 1-based
-            if z_choice == 'ALL Z planes':
-                z_range = (1, size_z+1)
-            elif "OR_specify_Z_index" in script_params:
-                z_index = script_params["OR_specify_Z_index"]
-                z_index = min(z_index, size_z)
-                z_range = (z_index,)
-            elif "OR_specify_Z_start_AND..." in script_params and \
-                    "...specify_Z_end" in script_params:
-                start = script_params["OR_specify_Z_start_AND..."]
-                start = min(start, size_z)
-                end = script_params["...specify_Z_end"]
-                end = min(end, size_z)
-                # in case user got z_start and z_end mixed up
-                z_start = min(start, end)
-                z_end = max(start, end)
-                if z_start == z_end:
-                    z_range = (z_start,)
-                else:
-                    z_range = (z_start, z_end+1)
-        return z_range
-
-    def get_t_range(size_t, script_params):
-        t_range = None
-        if "Choose_T_Section" in script_params:
-            t_choice = script_params["Choose_T_Section"]
-            # NB: all T indices in this script are 1-based
-            if t_choice == 'ALL T planes':
-                t_range = (1, size_t+1)
-            elif "OR_specify_T_index" in script_params:
-                t_index = script_params["OR_specify_T_index"]
-                t_index = min(t_index, size_t)
-                t_range = (t_index,)
-            elif "OR_specify_T_start_AND..." in script_params and \
-                    "...specify_T_end" in script_params:
-                start = script_params["OR_specify_T_start_AND..."]
-                start = min(start, size_t)
-                end = script_params["...specify_T_end"]
-                end = min(end, size_t)
-                # in case user got t_start and t_end mixed up
-                t_start = min(start, end)
-                t_end = max(start, end)
-                if t_start == t_end:
-                    t_range = (t_start,)
-                else:
-                    t_range = (t_start, t_end+1)
-        return t_range
+    zoom_percent = set_zoom_percent(conn, script_params)
 
     # Get the images or datasets
     message = ""
@@ -767,9 +776,18 @@ def batch_image_export(conn, script_params):
 
     ids = []
     # do the saving to disk
-
+    data_to_export = []
     for img in images:
         log("Processing image: ID %s: %s" % (img.id, img.getName()))
+        #NMS: Added check for special tags
+        tags = get_tags(img)
+        if len(tags) < 1:
+            continue
+
+        for tag in tags:
+            row_to_export = get_export_data(conn, script_params, img, units)
+            row_to_export["tag_value"] = tag
+            data_to_export.extend(row_to_export)
         pixels = img.getPrimaryPixels()
         if (pixels.getId() in ids):
             continue
@@ -787,10 +805,7 @@ def batch_image_export(conn, script_params):
             size_x = pixels.getSizeX()
             size_y = pixels.getSizeY()
             if size_x*size_y > size:
-                msg = "Can't export image over %s pixels. See Omero server \
-                configuration property 'omero.client.download_as.max_size \
-                (https://docs.openmicroscopy.org/omero/5.5.0/sysadmins/\
-                config.html#omero-client-download-as-max-size)" % size
+                msg = """Can't export image over %s pixels. See Omero server configuration property 'omero.client.download_as.max_size (https://docs.openmicroscopy.org/omero/5.5.0/sysadmins/config.html#omero-client-download-as-max-size)""" % size
                 log("  ** %s. **" % msg)
                 if len(images) == 1:
                     return None, msg
@@ -798,13 +813,17 @@ def batch_image_export(conn, script_params):
             else:
                 log("Exporting image as %s: %s" % (format, img.getName()))
 
+
+
             log("\n----------- Saving planes from image: '%s' ------------"
                 % img.getName())
             size_c = img.getSizeC()
             size_z = img.getSizeZ()
             size_t = img.getSizeT()
-            z_range = get_z_range(size_z, script_params)
-            t_range = get_t_range(size_t, script_params)
+            #z_range = get_z_range(size_z, script_params)
+            #t_range = get_t_range(size_t, script_params)
+            z_range = (1,)
+            t_range = (1,)
             log("Using:")
             if z_range is None:
                 log("  Z-index: Last-viewed")
@@ -949,6 +968,31 @@ def run_script():
     )
 
     try:
+        '''
+        # Find units for length. If any images have NO pixel size, use 'pixels'
+        # since we can't convert
+        any_none = False
+        for i in images:
+            if i.getPixelSizeX() is None:
+                any_none = True
+        pixel_size_x = images[0].getPixelSizeX(units=True)
+        units = None if any_none else pixel_size_x.getUnit()
+        symbol = None if any_none else pixel_size_x.getSymbol()
+    
+        # build a list of dicts.
+        export_data = []
+        for image in images:
+            export_data.extend(get_export_data(conn, script_params, image, units))
+    
+        # Write to csv
+        file_ann = write_csv(conn, export_data, script_params, symbol)
+        if script_params['Data_Type'] == "Dataset":
+            datasets = conn.getObjects("Dataset", script_params['IDs'])
+            link_annotation(datasets, file_ann)
+        else:
+            link_annotation(images, file_ann)
+        message = "Exported %s shapes" % len(export_data)
+        '''
         start_time = datetime.now()
         script_params = {}
         conn = BlitzGateway(client_obj=client)
