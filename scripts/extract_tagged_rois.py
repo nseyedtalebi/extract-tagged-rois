@@ -22,6 +22,8 @@ import glob
 import zipfile
 from datetime import datetime
 
+#set to default, pull from server later in script
+OMERO_MAX_DOWNLOAD_SIZE = 144000000
 DEFAULT_FILE_NAME = "Batch_ROI_Export.csv"
 INSIGHT_POINT_LIST_RE = re.compile(r'points\[([^\]]+)\]')
 
@@ -245,61 +247,24 @@ def link_annotation(objects, file_ann):
             o.linkAnnotation(file_ann)
 
 
-def batch_roi_export(conn, script_params):
-    """Main entry point. Get images, process them and return result."""
-    images = []
-
-    if script_params['Data_Type'] == "Image":
-        images = list(conn.getObjects("Image", script_params['IDs']))
+def get_image_pixel_size(image, units):
+    if units is not None:
+        r_pixel_size_x = image.getPixelSizeX(units=units)
+        r_pixel_size_y = image.getPixelSizeY(units=units)
+        assert r_pixel_size_x is not None
+        assert r_pixel_size_y is not None
+        return r_pixel_size_x.getValue(), r_pixel_size_y.getValue()
     else:
-        for dataset in conn.getObjects("Dataset", script_params['IDs']):
-            images.extend(list(dataset.listChildren()))
+        #return a tuple with None for entries. Not the same as None!
+        return None, None
 
-    log("Processing %s images..." % len(images))
-    if len(images) == 0:
-        return None
 
-    # Find units for length. If any images have NO pixel size, use 'pixels'
-    # since we can't convert
-    any_none = False
-    for i in images:
-        if i.getPixelSizeX() is None:
-            any_none = True
-    pixel_size_x = images[0].getPixelSizeX(units=True)
-    units = None if any_none else pixel_size_x.getUnit()
-    symbol = None if any_none else pixel_size_x.getSymbol()
-
-    # build a list of dicts.
-    export_data = []
-    for image in images:
-        export_data.extend(get_export_data(conn, script_params, image, units))
-
-    # Write to csv
-    file_ann = write_csv(conn, export_data, script_params, symbol)
-    if script_params['Data_Type'] == "Dataset":
-        datasets = conn.getObjects("Dataset", script_params['IDs'])
-        link_annotation(datasets, file_ann)
-    else:
-        link_annotation(images, file_ann)
-    message = "Exported %s shapes" % len(export_data)
-    return file_ann, message
-
-def get_export_data(conn, script_params, image, units=None):
+def get_export_data(conn, script_params, image, tag, units=None):
     """Get pixel data for shapes on image and returns list of dicts."""
     log("Image ID %s..." % image.id)
-
     # Get pixel size in SAME units for all images
-    pixel_size_x = None
-    pixel_size_y = None
-    if units is not None:
-        pixel_size_x = image.getPixelSizeX(units=units)
-        pixel_size_x = pixel_size_x.getValue() if pixel_size_x else None
-        pixel_size_y = image.getPixelSizeY(units=units)
-        pixel_size_y = pixel_size_y.getValue() if pixel_size_y else None
-
+    pixel_size_x, pixel_size_y = get_image_pixel_size(image, units)
     roi_service = conn.getRoiService()
-    #all_planes = script_params["Export_All_Planes"]
-    #NMS: To simplify things to start
     all_planes = False
     size_c = image.getSizeC()
     # Channels index
@@ -365,7 +330,8 @@ def get_export_data(conn, script_params, image, units=None):
                             "max": stats[0].max[c] if stats else "",
                             "sum": stats[0].sum[c] if stats else "",
                             "mean": stats[0].mean[c] if stats else "",
-                            "std_dev": stats[0].stdDev[c] if stats else ""
+                            "std_dev": stats[0].stdDev[c] if stats else "",
+                            "tag": tag,
                         }
                         add_shape_coords(shape, row_data,
                                          pixel_size_x, pixel_size_y)
@@ -719,6 +685,38 @@ def get_tags(export_data):
     return ("test",)
 
 
+def write_log_file(log_strings, export_dir, log_file_name):
+    with open(os.path.join(export_dir, log_file_name), 'w') as log_file:
+        for s in log_strings:
+            log_file.write(s)
+            log_file.write("\n")
+
+
+def find_length_units(images):
+    # Find units for length. If any images have NO pixel size, use 'pixels'
+    # since we can't convert
+    any_none = False
+    for i in images:
+        if i.getPixelSizeX() is None:
+            any_none = True
+    pixel_size_x = images[0].getPixelSizeX(units=True)
+    if any_none:
+        return None, None
+    else:
+        return pixel_size_x.getUnit(), pixel_size_x.getSymbol()
+
+
+def image_too_large(pixels):
+    size_x = pixels.getSizeX()
+    size_y = pixels.getSizeY()
+    if size_x*size_y > OMERO_MAX_DOWNLOAD_SIZE:
+        msg = """Can't export image over %s pixels. See Omero server configurat\
+        ion property 'omero.client.download_as.max_size (https://docs.openmicro\
+        scopy.org/omero/5.5.0/sysadmins/config.html#omero-client-download-as-ma\
+        x-size)""" % OMERO_MAX_DOWNLOAD_SIZE
+        log("  ** %s. **" % msg)
+
+
 def export_images_of_tagged_rois(conn, script_params):
 
     # for params with default values, we can get the value directly
@@ -770,25 +768,23 @@ def export_images_of_tagged_rois(conn, script_params):
         os.mkdir(exp_dir)
     except OSError:
         pass
-    # max size (default 12kx12k)
-    size = conn.getDownloadAsMaxSizeSetting()
-    size = int(size)
 
     ids = []
     # do the saving to disk
     data_to_export = []
+    length_units, units_symbol = find_length_units(images)
     for img in images:
         log("Processing image: ID %s: %s" % (img.id, img.getName()))
-        #NMS: Added check for special tags
+        #NMS: Check for tags in ROI comments
         tags = get_tags(img)
         if len(tags) < 1:
             continue
-
         for tag in tags:
-            row_to_export = get_export_data(conn, script_params, img, units)
-            row_to_export["tag_value"] = tag
+            row_to_export = get_export_data(conn, script_params, img, tag, length_units)
             data_to_export.extend(row_to_export)
         pixels = img.getPrimaryPixels()
+        if image_too_large(pixels):
+            continue
         if (pixels.getId() in ids):
             continue
         ids.append(pixels.getId())
@@ -802,48 +798,17 @@ def export_images_of_tagged_rois(conn, script_params):
             else:
                 save_as_ome_tiff(conn, img, folder_name)
         else:
-            size_x = pixels.getSizeX()
-            size_y = pixels.getSizeY()
-            if size_x*size_y > size:
-                msg = """Can't export image over %s pixels. See Omero server configuration property 'omero.client.download_as.max_size (https://docs.openmicroscopy.org/omero/5.5.0/sysadmins/config.html#omero-client-download-as-max-size)""" % size
-                log("  ** %s. **" % msg)
-                if len(images) == 1:
-                    return None, msg
-                continue
-            else:
-                log("Exporting image as %s: %s" % (format, img.getName()))
-
-
-
+            log("Exporting image as %s: %s" % (format, img.getName()))
             log("\n----------- Saving planes from image: '%s' ------------"
                 % img.getName())
-            size_c = img.getSizeC()
-            size_z = img.getSizeZ()
-            size_t = img.getSizeT()
-            #z_range = get_z_range(size_z, script_params)
-            #t_range = get_t_range(size_t, script_params)
+            size_c, size_z, size_t = img.getSizeC(), img.getSizeZ(), img.getSizeT()
             z_range = (1,)
             t_range = (1,)
             log("Using:")
-            if z_range is None:
-                log("  Z-index: Last-viewed")
-            elif len(z_range) == 1:
-                log("  Z-index: %d" % z_range[0])
-            else:
-                log("  Z-range: %s-%s" % (z_range[0], z_range[1]-1))
-            if project_z:
-                log("  Z-projection: ON")
-            if t_range is None:
-                log("  T-index: Last-viewed")
-            elif len(t_range) == 1:
-                log("  T-index: %d" % t_range[0])
-            else:
-                log("  T-range: %s-%s" % (t_range[0], t_range[1]-1))
+            log("  Z-index: %d" % z_range[0])
+            log("  T-index: %d" % t_range[0])
             log("  Format: %s" % format)
-            if zoom_percent is None:
-                log("  Image Zoom: 100%")
-            else:
-                log("  Image Zoom: %s" % zoom_percent)
+            log("  Image Zoom: %s" % zoom_percent)
             log("  Greyscale: %s" % greyscale)
             log("Channel Rendering Settings:")
             for ch in img.getChannels():
@@ -859,31 +824,18 @@ def export_images_of_tagged_rois(conn, script_params):
             finally:
                 # Make sure we close Rendering Engine
                 img._re.close()
-
-        # write log for exported images (not needed for ome-tiff)
-        name = 'Batch_Image_Export.txt'
-        with open(os.path.join(exp_dir, name), 'w') as log_file:
-            for s in log_strings:
-                log_file.write(s)
-                log_file.write("\n")
-
+    # Write index data
+    write_csv(conn, data_to_export, script_params, units_symbol)
+    # write log for exported images (not needed for ome-tiff)
+    write_log_file(log_strings, exp_dir, 'Batch_Image_Export.txt')
     if len(os.listdir(exp_dir)) == 0:
         return None, "No files exported. See 'info' for more details"
-    # zip everything up (unless we've only got a single ome-tiff)
-    if format == 'OME-TIFF' and len(os.listdir(exp_dir)) == 1:
-        ometiff_ids = [t.id for t in parent.listAnnotations(ns=NSOMETIFF)]
-        conn.deleteObjects("Annotation", ometiff_ids)
-        export_file = os.path.join(folder_name, os.listdir(exp_dir)[0])
-        namespace = NSOMETIFF
-        output_display_name = "OME-TIFF"
-        mimetype = 'image/tiff'
-    else:
-        export_file = "%s.zip" % folder_name
-        compress(export_file, folder_name)
-        mimetype = 'application/zip'
-        output_display_name = "Batch export zip"
-        namespace = NSCREATED + "/omero/export_scripts/Batch_Image_Export"
-
+    # zip everything up
+    export_file = "%s.zip" % folder_name
+    compress(export_file, folder_name)
+    mimetype = 'application/zip'
+    output_display_name = "Batch export zip"
+    namespace = NSCREATED + "/omero/export_scripts/Batch_Image_Export"
     file_annotation, ann_message = script_utils.create_link_file_annotation(
         conn, export_file, parent, output=output_display_name,
         namespace=namespace, mimetype=mimetype)
@@ -895,19 +847,6 @@ def run_script():
     data_types = [rstring('Dataset'), rstring('Image')]
     formats = [rstring('JPEG'), rstring('PNG'), rstring('TIFF'),
                rstring('OME-TIFF')]
-    default_z_option = 'Default-Z (last-viewed)'
-    z_choices = [rstring(default_z_option),
-                 rstring('ALL Z planes'),
-                 # currently ImageWrapper only allows full Z-stack projection
-                 rstring('Max projection'),
-                 rstring('Other (see below)')]
-    default_t_option = 'Default-T (last-viewed)'
-    t_choices = [rstring(default_t_option),
-                 rstring('ALL T planes'),
-                 rstring('Other (see below)')]
-    zoom_percents = omero.rtypes.wrap(["25%", "50%", "100%", "200%",
-                                       "300%", "400%"])
-
     client = scripts.client(
         'extract_tagged_rois.py',
         """Extract ROIs annotated with a user-selectable character. The text   \
@@ -968,46 +907,21 @@ def run_script():
     )
 
     try:
-        '''
-        # Find units for length. If any images have NO pixel size, use 'pixels'
-        # since we can't convert
-        any_none = False
-        for i in images:
-            if i.getPixelSizeX() is None:
-                any_none = True
-        pixel_size_x = images[0].getPixelSizeX(units=True)
-        units = None if any_none else pixel_size_x.getUnit()
-        symbol = None if any_none else pixel_size_x.getSymbol()
-    
-        # build a list of dicts.
-        export_data = []
-        for image in images:
-            export_data.extend(get_export_data(conn, script_params, image, units))
-    
-        # Write to csv
-        file_ann = write_csv(conn, export_data, script_params, symbol)
-        if script_params['Data_Type'] == "Dataset":
-            datasets = conn.getObjects("Dataset", script_params['IDs'])
-            link_annotation(datasets, file_ann)
-        else:
-            link_annotation(images, file_ann)
-        message = "Exported %s shapes" % len(export_data)
-        '''
         start_time = datetime.now()
         script_params = {}
         conn = BlitzGateway(client_obj=client)
         script_params = client.getInputs(unwrap=True)
+        OMERO_MAX_DOWNLOAD_SIZE = int(conn.getDownloadAsMaxSizeSetting())
         for key, value in script_params.items():
             log("%s:%s" % (key, value))
         # call the main script - returns a file annotation wrapper
-        file_annotation, message = batch_image_export(conn, script_params)
+        file_annotation, message = export_images_of_tagged_rois(conn, script_params)
         stop_time = datetime.now()
         log("Duration: %s" % str(stop_time-start_time))
         # return this fileAnnotation to the client.
         client.setOutput("Message", rstring(message))
         if file_annotation is not None:
-            client.setOutput("File_Annotation",
-                             robject(file_annotation._obj))
+            client.setOutput("File_Annotation", robject(file_annotation._obj))
     finally:
         client.closeSession()
 
