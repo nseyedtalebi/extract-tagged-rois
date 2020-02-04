@@ -222,23 +222,22 @@ def write_csv(conn, export_data, script_params, units_symbol):
         file_name = DEFAULT_FILE_NAME
     if not file_name.endswith(".csv"):
         file_name += ".csv"
-
+    log("Writing CSV file '%s'" % file_name)
     csv_header = ",".join(COLUMN_NAMES)
     if units_symbol is None:
         units_symbol = "pixels"
     csv_header = csv_header.replace(",length,", ",length (%s)," % units_symbol)
     csv_header = csv_header.replace(",area,", ",area (%s)," % units_symbol)
     csv_rows = [csv_header]
-
+    log("Found %d rows to export" % len(export_data))
     for row in export_data:
         cells = [str(row.get(name, "")) for name in COLUMN_NAMES]
         csv_rows.append(",".join(cells))
-
+    log("Writing CSV to disk")
     with open(file_name, 'w') as csv_file:
-        csv_file.write("\n".join(csv_rows))
-
+        byte_count = csv_file.write("\n".join(csv_rows))
+    log("Wrote %d bytes" % byte_count)
     return conn.createFileAnnfromLocalFile(file_name, mimetype="text/csv")
-
 
 def link_annotation(objects, file_ann):
     """Link the File Annotation to each object."""
@@ -414,14 +413,15 @@ def compress(target, base):
     @param base:        Name of folder that we want to zip up E.g. "folder"
     """
     zip_file = zipfile.ZipFile(target, 'w')
+    messages = []
     try:
         files = os.path.join(base, "*")
         for name in glob.glob(files):
             zip_file.write(name, os.path.basename(name), zipfile.ZIP_DEFLATED)
-
+            messages.append("Wrote {} to zip file {}".format(name, base))
     finally:
         zip_file.close()
-
+    return '\n'.join(messages)
 
 """NMS: The use of 'save' here may be confusing at first. It's actually calling
 the .save method on a PIL image object. Omero server manages the IO ops called
@@ -685,14 +685,15 @@ def get_tags(export_data):
     return ("test",)
 
 
-def write_log_file(log_strings, export_dir, log_file_name):
-    with open(os.path.join(export_dir, log_file_name), 'w') as log_file:
+def write_log_file(conn, log_strings, export_dir, log_file_name):
+    log_path = os.path.join(export_dir, log_file_name)
+    with open(log_path, 'w') as log_file:
         for s in log_strings:
             log_file.write(s)
             log_file.write("\n")
+    return conn.createFileAnnfromLocalFile(log_path, mimetype="text")
 
-
-def find_length_units(images):
+def get_units_and_symbol(images):
     # Find units for length. If any images have NO pixel size, use 'pixels'
     # since we can't convert
     any_none = False
@@ -715,9 +716,10 @@ def image_too_large(pixels):
         scopy.org/omero/5.5.0/sysadmins/config.html#omero-client-download-as-ma\
         x-size)""" % OMERO_MAX_DOWNLOAD_SIZE
         log("  ** %s. **" % msg)
+        return [msg]#for consistency
 
 
-def export_images_of_tagged_rois(conn, script_params):
+def export_images_of_tagged_rois(conn, script_params, objects):
 
     # for params with default values, we can get the value directly
     split_cs = script_params["Export_Individual_Channels"]
@@ -728,7 +730,7 @@ def export_images_of_tagged_rois(conn, script_params):
     folder_name = os.path.basename(folder_name)
     format = script_params["Format"]
     project_z = False
-
+    message = []
     if (not split_cs) and (not merged_cs):
         log("Not chosen to save Individual Channels OR Merged Image")
         return
@@ -739,13 +741,6 @@ def export_images_of_tagged_rois(conn, script_params):
         channel_names = script_params["Channel_Names"]
     zoom_percent = set_zoom_percent(conn, script_params)
 
-    # Get the images or datasets
-    message = ""
-    objects, log_message = script_utils.get_objects(conn, script_params)
-    message += log_message
-    if not objects:
-        return None, message
-
     # Attach figure to the first image
     parent = objects[0] #NMS: Why first index? Has to do with data model?
 
@@ -754,8 +749,8 @@ def export_images_of_tagged_rois(conn, script_params):
         for ds in objects:
             images.extend(list(ds.listChildren()))
         if not images:
-            message += "No image found in dataset(s)"
-            return None, message
+            message.append("No image found in dataset(s)")
+            return None, '\n'.join(message)
     else:
         images = objects
 
@@ -771,8 +766,8 @@ def export_images_of_tagged_rois(conn, script_params):
 
     ids = []
     # do the saving to disk
-    data_to_export = []
-    length_units, units_symbol = find_length_units(images)
+    roi_export_data = []
+    length_units, units_symbol = get_units_and_symbol(images)
     for img in images:
         log("Processing image: ID %s: %s" % (img.id, img.getName()))
         #NMS: Check for tags in ROI comments
@@ -781,7 +776,7 @@ def export_images_of_tagged_rois(conn, script_params):
             continue
         for tag in tags:
             row_to_export = get_export_data(conn, script_params, img, tag, length_units)
-            data_to_export.extend(row_to_export)
+            roi_export_data.extend(row_to_export)
         pixels = img.getPrimaryPixels()
         if image_too_large(pixels):
             continue
@@ -824,30 +819,16 @@ def export_images_of_tagged_rois(conn, script_params):
             finally:
                 # Make sure we close Rendering Engine
                 img._re.close()
-    # Write index data
-    write_csv(conn, data_to_export, script_params, units_symbol)
-    # write log for exported images (not needed for ome-tiff)
-    write_log_file(log_strings, exp_dir, 'Batch_Image_Export.txt')
     if len(os.listdir(exp_dir)) == 0:
         return None, "No files exported. See 'info' for more details"
-    # zip everything up
-    export_file = "%s.zip" % folder_name
-    compress(export_file, folder_name)
-    mimetype = 'application/zip'
-    output_display_name = "Batch export zip"
-    namespace = NSCREATED + "/omero/export_scripts/Batch_Image_Export"
-    file_annotation, ann_message = script_utils.create_link_file_annotation(
-        conn, export_file, parent, output=output_display_name,
-        namespace=namespace, mimetype=mimetype)
-    message += ann_message
-    return file_annotation, message
+
+    return roi_export_data, '\n'.join(message)
 
 
-def run_script():
+def get_client():
     data_types = [rstring('Dataset'), rstring('Image')]
-    formats = [rstring('JPEG'), rstring('PNG'), rstring('TIFF'),
-               rstring('OME-TIFF')]
-    client = scripts.client(
+    formats = [rstring('JPEG'), rstring('PNG'), rstring('TIFF'), rstring('OME-TIFF')]
+    return scripts.client(
         'extract_tagged_rois.py',
         """Extract ROIs annotated with a user-selectable character. The text   \
         following the character becomes the name of a tag attached to the ROI. \
@@ -870,7 +851,7 @@ def run_script():
         scripts.Bool(
             "Export_Individual_Channels", grouping="3",
             description="Save individual channels as separate images",
-            default=True),
+            default=False),
 
         scripts.Bool(
             "Individual_Channels_Grey", grouping="3.1",
@@ -906,6 +887,9 @@ def run_script():
         contact="ome-users@lists.openmicroscopy.org.uk",
     )
 
+
+def run_script():
+    client = get_client()
     try:
         start_time = datetime.now()
         script_params = {}
@@ -914,16 +898,37 @@ def run_script():
         OMERO_MAX_DOWNLOAD_SIZE = int(conn.getDownloadAsMaxSizeSetting())
         for key, value in script_params.items():
             log("%s:%s" % (key, value))
-        # call the main script - returns a file annotation wrapper
-        file_annotation, message = export_images_of_tagged_rois(conn, script_params)
+
+        # Get the images or datasets
+        objects, getobj_message = script_utils.get_objects(conn, script_params)
+        parent = objects[0]
+        roi_export, export_msg = export_images_of_tagged_rois(conn, script_params, objects)
+        units, units_symbol = get_units_and_symbol(objects)
+        # Write index data
+        csv_file_ann = write_csv(conn, roi_export, script_params, units_symbol)
+        # zip everything up
+        export_file = "%s.zip" % script_params["Folder_Name"]
+        #message.append()
+        compress_msg = compress(export_file, script_params["Folder_Name"])
+        mimetype = 'application/zip'
+        output_display_name = "Batch export zip"
+        namespace = NSCREATED + "/opt/scripts/extract_tagged_rois"
+        zip_file_ann, ann_message = script_utils.create_link_file_annotation(
+            conn, export_file, parent, output=output_display_name,
+            namespace=namespace, mimetype=mimetype)
+        #message.append(ann_message)
         stop_time = datetime.now()
         log("Duration: %s" % str(stop_time-start_time))
-        # return this fileAnnotation to the client.
+        message = '\n'.join(export_msg+compress_msg+getobj_message)
         client.setOutput("Message", rstring(message))
-        if file_annotation is not None:
-            client.setOutput("File_Annotation", robject(file_annotation._obj))
+        if zip_file_ann is not None:
+            client.setOutput("Export_File", robject(zip_file_ann._obj))
+        log_file_ann = write_log_file(conn, log_strings, script_params["Folder_Name"],
+                                      "Logs.txt")
+        client.setOutput("Logs", robject(log_file_ann._obj))
     finally:
         client.closeSession()
+
 
 if __name__ == "__main__":
     run_script()
