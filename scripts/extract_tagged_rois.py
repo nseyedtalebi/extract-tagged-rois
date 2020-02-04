@@ -215,9 +215,8 @@ def add_shape_coords(shape, row_data, pixel_size_x, pixel_size_y):
         row_data['area'] = row_data['area'] * pixel_size_x * pixel_size_y
 
 
-def write_csv(conn, export_data, script_params, units_symbol):
+def write_csv(conn, export_data, units_symbol, file_name):
     """Write the list of data to a CSV file and create a file annotation."""
-    file_name = script_params.get("File_Name", "")
     if len(file_name) == 0:
         file_name = DEFAULT_FILE_NAME
     if not file_name.endswith(".csv"):
@@ -238,6 +237,7 @@ def write_csv(conn, export_data, script_params, units_symbol):
         byte_count = csv_file.write("\n".join(csv_rows))
     log("Wrote %d bytes" % byte_count)
     return conn.createFileAnnfromLocalFile(file_name, mimetype="text/csv")
+
 
 def link_annotation(objects, file_ann):
     """Link the File Annotation to each object."""
@@ -415,10 +415,14 @@ def compress(target, base):
     zip_file = zipfile.ZipFile(target, 'w')
     messages = []
     try:
-        files = os.path.join(base, "*")
-        for name in glob.glob(files):
+        files = glob.glob(os.path.join(base, "*"))
+        log("compress: Found the following files in %s" % base)
+        messages.append("\n".join(files))
+        for name in files:
             zip_file.write(name, os.path.basename(name), zipfile.ZIP_DEFLATED)
-            messages.append("Wrote {} to zip file {}".format(name, base))
+            msg_str = "compress: Wrote {} to zip file {}".format(name, base)
+            messages.append(msg_str)
+            log(msg_str)
     finally:
         zip_file.close()
     return '\n'.join(messages)
@@ -720,7 +724,6 @@ def image_too_large(pixels):
 
 
 def export_images_of_tagged_rois(conn, script_params, objects):
-
     # for params with default values, we can get the value directly
     split_cs = script_params["Export_Individual_Channels"]
     merged_cs = script_params["Export_Merged_Image"]
@@ -901,11 +904,13 @@ def run_script():
 
         # Get the images or datasets
         objects, getobj_message = script_utils.get_objects(conn, script_params)
+        log("Message from get_objects(): %s" % getobj_message)
         parent = objects[0]
         roi_export, export_msg = export_images_of_tagged_rois(conn, script_params, objects)
         units, units_symbol = get_units_and_symbol(objects)
         # Write index data
-        csv_file_ann = write_csv(conn, roi_export, script_params, units_symbol)
+        index_data_path = os.path.join(script_params.get("Folder_Name"), "roi_index_data.csv")
+        csv_file_ann = write_csv(conn, roi_export, units_symbol, index_data_path)
         # zip everything up
         export_file = "%s.zip" % script_params["Folder_Name"]
         #message.append()
@@ -919,8 +924,9 @@ def run_script():
         #message.append(ann_message)
         stop_time = datetime.now()
         log("Duration: %s" % str(stop_time-start_time))
-        message = '\n'.join(export_msg+compress_msg+getobj_message)
-        client.setOutput("Message", rstring(message))
+        message = "Exported {} of the {} images in the set ".format(len(objects), len(roi_export))
+        #client.setOutput("Message", rstring(message))
+        client.setOutput("Mesage", rstring(message))
         if zip_file_ann is not None:
             client.setOutput("Export_File", robject(zip_file_ann._obj))
         log_file_ann = write_log_file(conn, log_strings, script_params["Folder_Name"],
